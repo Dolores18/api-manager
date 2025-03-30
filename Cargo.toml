@@ -1,0 +1,71 @@
+[package]
+name = "api-manager"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "AI API管理系统，用于管理各种AI服务的API"
+
+[dependencies]
+# 核心依赖
+tokio = { version = "1.35.1", features = ["full"] }
+axum = "0.7.4"
+tower = "0.4.13"
+tower-http = { version = "0.5.1", features = ["trace", "cors", "compression-gzip", "timeout", "limit"] }
+
+# 序列化/反序列化
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.113"
+
+# 数据库 - 使用SQLite代替PostgreSQL
+sqlx = { version = "0.7.3", features = ["runtime-tokio-rustls", "sqlite", "uuid", "chrono", "json", "migrate"] }
+# 移除 deadpool-postgres
+rusqlite = { version = "0.30.0", features = ["bundled"] }
+
+# 日志和监控
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+
+# 配置管理
+config = "0.13.4"
+dotenv = "0.15.0"
+
+# 认证和安全
+jsonwebtoken = "9.2.0"
+argon2 = "0.5.2"
+rand = "0.8.5"
+uuid = { version = "1.7.0", features = ["v4", "serde"] }
+
+# HTTP客户端
+reqwest = { version = "0.11.24", features = ["json", "rustls-tls", "stream"] }
+
+# 错误处理
+anyhow = "1.0.79"
+thiserror = "1.0.56"
+
+# 时间处理
+chrono = { version = "0.4.33", features = ["serde"] }
+
+# 异步工具
+futures = "0.3.30"
+futures-util = "0.3.30"
+async-stream = "0.3.5"
+async-trait = "0.1.77"
+bytes = "1.5.0"
+
+# 验证
+validator = { version = "0.16.1", features = ["derive"] }
+
+# 测试
+mockall = "0.12.1"
+wiremock = "0.5.22"
+
+utoipa = { version = "4", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "6", features = ["axum"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4.0"
+tokio-test = "0.4.3"
+
+[features]
+default = []
+test-integration = []
