@@ -280,14 +280,7 @@ async fn handle_normal_response(
                 // 更新使用情况
                 token_manager.update_usage(total_tokens).await;
                 
-                let chat_response = ChatCompletionResponse {
-                    model: response.model,
-                    content: response.choices.get(0)
-                        .map(|choice| choice.message.content.clone())
-                        .unwrap_or_default(),
-                    usage: Some(response.usage),
-                };
-
+                // 直接转发原始响应
                 info!(
                     "请求完成, 提供商: {}, 总tokens: {}", 
                     token_manager.provider.base_url,
@@ -297,7 +290,7 @@ async fn handle_normal_response(
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::to_string(&chat_response).unwrap()))
+                    .body(Body::from(serde_json::to_string(&response).unwrap()))
                     .unwrap();
             }
             Err(err) => {
