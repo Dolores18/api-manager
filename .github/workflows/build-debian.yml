@@ -61,7 +61,7 @@ jobs:
           mv debian.deb api-manager_$(git describe --tags --always | sed 's/^v//').deb
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: api-manager-debian
           path: api-manager_*.deb
