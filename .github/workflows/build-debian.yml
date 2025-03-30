@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 获取完整历史以正确生成版本号
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -21,6 +23,15 @@ jobs:
           toolchain: stable
           override: true
           target: x86_64-unknown-linux-gnu
+
+      # 添加缓存
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 只有当这些文件变化时才重建缓存
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # 缓存整个target目录和cargo注册表
+          cache-on-failure: true
 
       - name: Install dependencies
         run: |
@@ -32,6 +43,25 @@ jobs:
         with:
           command: build
           args: --release --target x86_64-unknown-linux-gnu
+
+      - name: Generate version number
+        id: version
+        run: |
+          # 尝试使用git标签作为版本号（移除v前缀）
+          GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          if [[ -n "$GIT_TAG" && "$GIT_TAG" =~ ^v[0-9].* ]]; then
+            # 有标签且格式正确，使用标签版本
+            VERSION="${GIT_TAG#v}"
+          else
+            # 没有合适的标签，使用日期+提交哈希作为版本号
+            COMMIT_HASH=$(git rev-parse --short HEAD)
+            DATE=$(date +%Y%m%d)
+            VERSION="0.1.0~${DATE}.${COMMIT_HASH}"
+          fi
+          
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "生成的版本号：$VERSION"
 
       - name: Create Debian package structure
         run: |
@@ -46,11 +76,11 @@ jobs:
           # 创建控制文件
           cat > debian/DEBIAN/control << EOF
           Package: api-manager
-          Version: $(git describe --tags --always | sed 's/^v//')
+          Version: ${{ env.VERSION }}
           Section: utils
           Priority: optional
           Architecture: amd64
-          Maintainer: $(git config --get user.name) <$(git config --get user.email)>
+          Maintainer: API Manager Team <info@example.com>
           Description: API Manager for DeepSeek and other AI models
            A management tool for AI API providers with load balancing capabilities.
           EOF
@@ -58,7 +88,7 @@ jobs:
       - name: Build Debian package
         run: |
           dpkg-deb --build debian
-          mv debian.deb api-manager_$(git describe --tags --always | sed 's/^v//').deb
+          mv debian.deb api-manager_${{ env.VERSION }}.deb
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
