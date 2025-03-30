@@ -1,0 +1,76 @@
+name: Build Debian Package
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          target: x86_64-unknown-linux-gnu
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev pkg-config
+
+      - name: Build release binary
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target x86_64-unknown-linux-gnu
+
+      - name: Create Debian package structure
+        run: |
+          mkdir -p debian/DEBIAN
+          mkdir -p debian/usr/bin
+          mkdir -p debian/usr/share/doc/api-manager
+          
+          # 拷贝二进制文件
+          cp target/x86_64-unknown-linux-gnu/release/api-manager debian/usr/bin/
+          chmod +x debian/usr/bin/api-manager
+          
+          # 创建控制文件
+          cat > debian/DEBIAN/control << EOF
+          Package: api-manager
+          Version: $(git describe --tags --always | sed 's/^v//')
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: $(git config --get user.name) <$(git config --get user.email)>
+          Description: API Manager for DeepSeek and other AI models
+           A management tool for AI API providers with load balancing capabilities.
+          EOF
+          
+      - name: Build Debian package
+        run: |
+          dpkg-deb --build debian
+          mv debian.deb api-manager_$(git describe --tags --always | sed 's/^v//').deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: api-manager-debian
+          path: api-manager_*.deb
+
+      # 仅在发布标签时创建发布
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: api-manager_*.deb
+          draft: false
+          prerelease: false 
