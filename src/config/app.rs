@@ -135,7 +135,7 @@ impl AppConfig {
             .unwrap_or(Environment::Development);
 
         // 服务器配置
-        let host = env::var("APP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let host = env::var("APP_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
         let port = env::var("APP_PORT")
             .unwrap_or_else(|_| "3000".to_string())
             .parse::<u16>()
