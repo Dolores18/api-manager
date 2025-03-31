@@ -171,9 +171,11 @@ pub async fn add_provider(
         model_version: request.model_version.clone(),
     };
 
+    // 初始化 BalanceChecker，传入 db 和 provider_pool
+    let balance_checker = BalanceChecker::new(state.db.clone().into(), state.provider_pool.clone());
+
     // 检查余额
     if provider_info.support_balance_check {
-        let balance_checker = BalanceChecker::new(Arc::new(state.db.clone()));
         match balance_checker.check_balance(&mut provider_info).await {
             Ok(_) => {
                 if provider_info.balance <= 0.0 {
@@ -319,9 +321,11 @@ pub async fn batch_add_providers(
             model_version: provider_request.model_version.clone(),
         };
 
+        // 初始化 BalanceChecker，传入 db 和 provider_pool
+        let balance_checker = BalanceChecker::new(state.db.clone().into(), state.provider_pool.clone());
+
         // 检查余额
         if provider_info.support_balance_check {
-            let balance_checker = BalanceChecker::new(Arc::new(state.db.clone()));
             match balance_checker.check_balance(&mut provider_info).await {
                 Ok(_) => {
                     if provider_info.balance <= 0.0 {
@@ -419,8 +423,123 @@ pub async fn batch_add_providers(
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
+// 定义数据库查询结果DTO
+#[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
+pub struct ProviderInfoDTO {
+    pub base_url: String,
+    pub api_key: String,
+    pub max_connections: i32,
+    pub min_connections: i32,
+    pub acquire_timeout_ms: i32,
+    pub idle_timeout_ms: i32,
+    pub load_balance_strategy: String,
+    pub retry_attempts: i32,
+    pub balance: f64,
+    pub last_balance_check: Option<chrono::DateTime<chrono::Utc>>,
+    pub min_balance_threshold: f64,
+    pub support_balance_check: bool,
+    pub model_name: String,
+    pub model_type: String,
+    pub model_version: String,
+}
+
+// 从DTO到ProviderInfo的转换
+impl From<ProviderInfoDTO> for ProviderInfo {
+    fn from(dto: ProviderInfoDTO) -> Self {
+        Self {
+            base_url: dto.base_url,
+            api_key: dto.api_key,
+            max_connections: dto.max_connections,
+            min_connections: dto.min_connections,
+            acquire_timeout_ms: dto.acquire_timeout_ms,
+            idle_timeout_ms: dto.idle_timeout_ms,
+            load_balance_strategy: dto.load_balance_strategy,
+            retry_attempts: dto.retry_attempts,
+            balance: dto.balance,
+            last_balance_check: dto.last_balance_check,
+            min_balance_threshold: dto.min_balance_threshold,
+            support_balance_check: dto.support_balance_check,
+            model_name: dto.model_name,
+            model_type: dto.model_type,
+            model_version: dto.model_version,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProviderListResponse {
+    pub providers: Vec<ProviderInfoDTO>,
+    pub count: usize,
+}
+
+/// 获取所有API提供商
+#[utoipa::path(
+    get,
+    path = "/v1/providers",
+    responses(
+        (status = 200, description = "成功获取所有API提供商", body = ProviderListResponse),
+        (status = 500, description = "服务器内部错误", body = ErrorResponse),
+    ),
+    tag = "providers"
+)]
+pub async fn get_all_providers(
+    State(state): State<AppState>,
+) -> Response {
+    info!("收到获取所有API提供商请求");
+
+    match sqlx::query_as::<_, ProviderInfoDTO>(
+        r#"
+        SELECT 
+            base_url,
+            api_key,
+            rate_limit as max_connections,
+            1 as min_connections,
+            3000 as acquire_timeout_ms,
+            60000 as idle_timeout_ms,
+            'RoundRobin' as load_balance_strategy,
+            3 as retry_attempts,
+            balance,
+            last_balance_check,
+            min_balance_threshold,
+            support_balance_check,
+            model_name,
+            model_type,
+            model_version
+        FROM api_providers
+        WHERE status = 'Active'
+        "#
+    )
+    .fetch_all(&state.db)
+    .await {
+        Ok(providers) => {
+            let count = providers.len();
+            info!("成功获取API提供商列表，共 {} 条记录", count);
+            
+            let response = ProviderListResponse {
+                providers,
+                count,
+            };
+            
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(e) => {
+            error!("获取API提供商列表失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("获取API提供商列表失败: {}", e),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     /// 错误信息
     pub error: String,
 } 
+
+
+

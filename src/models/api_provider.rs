@@ -25,8 +25,9 @@ pub enum ProviderStatus {
 pub struct ApiProvider {
     /// 唯一标识符
     pub id: String,
-    /// 提供商名称
+    /// 提供商名称（显示用）
     pub name: String,
+  
     /// 提供商类型
     pub provider_type: ProviderType,
     /// 是否为官方API
@@ -60,6 +61,7 @@ impl ApiProvider {
     pub fn new(
         id: String,
         name: String,
+        provider_name: Option<String>,
         provider_type: ProviderType,
         is_official: bool,
         base_url: String,
@@ -67,9 +69,22 @@ impl ApiProvider {
         rate_limit: Option<u32>,
     ) -> Self {
         let now = chrono::Utc::now();
+        
+        // 如果没有提供provider_name，则根据provider_type生成
+        let provider_name = provider_name.unwrap_or_else(|| {
+            match provider_type {
+                ProviderType::OpenAI => "OpenAI".to_string(),
+                ProviderType::Anthropic => "Anthropic".to_string(),
+                ProviderType::DeepSeek => "DeepSeek".to_string(),
+                ProviderType::MistralAI => "MistralAI".to_string(),
+                ProviderType::Custom(ref s) => s.clone(),
+            }
+        });
+        
         Self {
             id,
             name,
+         
             provider_type,
             is_official,
             base_url,
@@ -83,6 +98,17 @@ impl ApiProvider {
             last_balance_check: None,
             min_balance_threshold: 3.0,
             support_balance_check: false,
+        }
+    }
+
+    /// 根据提供商类型获取标准化的提供商名称
+    pub fn get_standard_provider_name(provider_type: &ProviderType) -> String {
+        match provider_type {
+            ProviderType::OpenAI => "OpenAI".to_string(),
+            ProviderType::Anthropic => "Anthropic".to_string(),
+            ProviderType::DeepSeek => "DeepSeek".to_string(),
+            ProviderType::MistralAI => "MistralAI".to_string(),
+            ProviderType::Custom(ref s) => s.clone(),
         }
     }
 

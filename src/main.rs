@@ -8,6 +8,7 @@ use api_manager::{
 };
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -38,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // 创建余额检查器
-    let balance_checker = Arc::new(BalanceChecker::new(db_pool.clone()));
+    let balance_checker = Arc::new(BalanceChecker::new(db_pool.clone(), provider_pool.clone()));
 
     // 启动定期余额检查任务
     let pool_clone = provider_pool.clone();
@@ -63,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting server on {}", addr);
     axum::serve(
         tokio::net::TcpListener::bind(&addr).await?,
-        app.into_make_service(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
 
