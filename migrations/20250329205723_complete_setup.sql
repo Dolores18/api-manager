@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS api_providers (
 CREATE INDEX IF NOT EXISTS idx_api_providers_name ON api_providers (name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_providers_api_key ON api_providers (api_key);
 
--- ========== 2. 插入API提供商数据 ==========
-
+-- ========== 2. 插入API提供商数据 (注释掉或移除) ==========
+-- 下面的 INSERT 语句已被移除，迁移文件现在只负责创建表结构
+/*
 -- 添加SiliconFlow提供商
 INSERT INTO api_providers (
     name,
@@ -82,3 +83,4 @@ INSERT INTO api_providers (
     'ChatCompletion',
     'v3'
 );
+*/

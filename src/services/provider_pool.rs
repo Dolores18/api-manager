@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 use chrono::{DateTime, Utc};
 use sqlx::{SqlitePool, Row};
+use tracing::info;
 
 use anyhow::Result;
 
@@ -163,6 +164,27 @@ impl ProviderPoolState {
     pub fn get_providers(&mut self) -> &mut Vec<ProviderInfo> {
         &mut self.providers
     }
+
+    // 新增方法：从内存中移除提供商
+    pub fn remove_provider(&mut self, api_key: &str) {
+        let initial_len = self.providers.len();
+        self.providers.retain(|p| p.api_key != api_key);
+        if self.providers.len() < initial_len {
+             info!("已从 ProviderPoolState 内存中移除提供商及其相关状态: {}", api_key);
+             // 移除信号量和使用记录
+             self.connection_semaphores.remove(api_key);
+             self.token_usage.remove(api_key);
+
+             // 如果移除后 current_index 超出范围，重置为 0
+             if self.current_index >= self.providers.len() && !self.providers.is_empty() {
+                 self.current_index = 0;
+             }
+             // 如果 providers 为空， current_index 保持为 0 或其他合适的值
+             else if self.providers.is_empty() {
+                 self.current_index = 0;
+             }
+        }
+    }
 }
 
 // 从数据库初始化代理池
@@ -183,35 +205,40 @@ pub async fn initialize_provider_pool(pool: &SqlitePool) -> Result<ProviderPoolS
             min_balance_threshold,
             support_balance_check,
             model_name,
-            model_type,
-            model_version
+            'text' as model_type,
+            '1.0' as model_version
         FROM api_providers
         WHERE status = 'Active'
-        "#,
+        "#
     )
     .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|row| ProviderInfo {
-        base_url: row.get("base_url"),
-        api_key: row.get("api_key"),
-        max_connections: row.get("max_connections"),
-        min_connections: row.get("min_connections"),
-        acquire_timeout_ms: row.get("acquire_timeout_ms"),
-        idle_timeout_ms: row.get("idle_timeout_ms"),
-        load_balance_strategy: row.get("load_balance_strategy"),
-        retry_attempts: row.get("retry_attempts"),
-        balance: row.get("balance"),
-        last_balance_check: row.get("last_balance_check"),
-        min_balance_threshold: row.get("min_balance_threshold"),
-        support_balance_check: row.get("support_balance_check"),
-        model_name: row.get("model_name"),
-        model_type: row.get("model_type"),
-        model_version: row.get("model_version"),
-    })
-    .collect();
+    .await?;
 
-    Ok(ProviderPoolState::new(providers))
+    let mut provider_info_vec = Vec::new();
+    for row in providers {
+        let provider_info = ProviderInfo {
+            base_url: row.get("base_url"),
+            api_key: row.get("api_key"),
+            max_connections: row.get("max_connections"),
+            min_connections: row.get("min_connections"),
+            acquire_timeout_ms: row.get("acquire_timeout_ms"),
+            idle_timeout_ms: row.get("idle_timeout_ms"),
+            load_balance_strategy: row.get("load_balance_strategy"),
+            retry_attempts: row.get("retry_attempts"),
+            balance: row.get("balance"),
+            last_balance_check: row.get("last_balance_check"),
+            min_balance_threshold: row.get("min_balance_threshold"),
+            support_balance_check: row.get("support_balance_check"),
+            model_name: row.get("model_name"),
+            model_type: row.get("model_type"),
+            model_version: row.get("model_version"),
+        };
+        provider_info_vec.push(provider_info);
+    }
+
+    info!("初始化提供商池，加载了 {} 个API提供商", provider_info_vec.len());
+    
+    Ok(ProviderPoolState::new(provider_info_vec))
 }
 
 // Token管理器

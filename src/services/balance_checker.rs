@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
-use crate::services::provider_pool::ProviderInfo;
+use tokio::sync::Mutex;
+use crate::services::provider_pool::{ProviderInfo, ProviderPoolState};
 
 #[derive(Debug, Deserialize)]
 struct UserInfoResponse {
@@ -27,29 +28,37 @@ struct UserData {
 pub struct BalanceChecker {
     client: Client,
     db_pool: Arc<SqlitePool>,
+    provider_pool: Arc<Mutex<ProviderPoolState>>,
 }
 
 impl BalanceChecker {
-    pub fn new(db_pool: Arc<SqlitePool>) -> Self {
+    pub fn new(db_pool: Arc<SqlitePool>, provider_pool: Arc<Mutex<ProviderPoolState>>) -> Self {
         Self {
             client: Client::new(),
             db_pool,
+            provider_pool,
         }
     }
 
     // 删除余额为0的提供商
     async fn remove_zero_balance_provider(&self, api_key: &str) -> anyhow::Result<()> {
-        sqlx::query(
+        let rows_affected = sqlx::query(
             "DELETE FROM api_providers WHERE api_key = ? AND balance <= 0"
         )
         .bind(api_key)
         .execute(&*self.db_pool)
-        .await?;
+        .await?
+        .rows_affected();
 
-        info!(
-            "已删除余额为0的提供商: api_key={}", 
-            api_key
-        );
+        if rows_affected > 0 {
+            info!(
+                "已从数据库删除余额为0的提供商: api_key={}",
+                api_key
+            );
+            self.provider_pool.lock().await.remove_provider(api_key);
+        } else {
+             info!("尝试从数据库删除 {} 失败或记录不存在/余额不为0", api_key);
+        }
 
         Ok(())
     }
@@ -93,19 +102,21 @@ impl BalanceChecker {
         provider.last_balance_check = Some(Utc::now());
 
         // 更新数据库中的余额
-        self.update_provider_balance(provider).await?;
+        if let Err(e) = self.update_provider_balance(provider).await {
+            error!("更新提供商 {} 数据库余额失败: {}", provider.api_key, e);
+        }
 
         info!(
-            "提供商 {} 余额更新成功: {}, 最后检查时间: {}", 
-            provider.api_key, 
+            "提供商 {} 余额获取成功: {}, 最后检查时间: {}",
+            provider.api_key,
             balance,
             provider.last_balance_check.unwrap()
         );
 
-        // 如果余额为0，删除该提供商
+        // 如果余额为0，尝试删除（包括数据库和内存）
         if balance <= 0.0 {
             if let Err(e) = self.remove_zero_balance_provider(&provider.api_key).await {
-                error!("删除余额为0的提供商失败: {}", e);
+                error!("处理余额为0的提供商 {} 时出错: {}", provider.api_key, e);
             }
         }
 
@@ -158,5 +169,6 @@ impl BalanceChecker {
                 }
             }
         }
+        info!("完成一轮所有提供商余额检查");
     }
 } 

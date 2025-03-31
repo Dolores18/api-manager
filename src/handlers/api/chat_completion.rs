@@ -1,11 +1,11 @@
 use axum::{
-    extract::{Json, State},
+    extract::{Json, State, ConnectInfo},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{time::Duration, sync::Arc};
+use std::{time::Duration, sync::Arc, net::SocketAddr};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 use sqlx::SqlitePool;
@@ -18,6 +18,9 @@ use std::pin::Pin;
 use crate::services::{ProviderInfo, TokenManager};
 use crate::services::provider_pool::ProviderPoolState;
 use utoipa::ToSchema;
+use crate::models::api_usage::{ApiUsage, ApiCallStatus};
+use uuid;
+use chrono;
 
 // 配置常量
 const RETRY_DELAY: Duration = Duration::from_secs(1);        // 重试延迟
@@ -112,33 +115,34 @@ pub struct ErrorResponse {
 )]
 pub async fn handle_chat_completion(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Response {
-    let model_name = format!("deepseek-ai/{}", 
-        request.model.as_deref().unwrap_or("DeepSeek-V3"));
+    let model_name = request.model.clone().unwrap_or_else(|| "DeepSeek-V3".to_string());
+    let client_ip = addr.ip().to_string();
 
     info!(
-        "收到聊天完成请求, 模型: {}, 消息数: {}, 流式请求: {}", 
+        "收到聊天完成请求, 模型: {}, 消息数: {}, 流式请求: {}, 客户端IP: {}", 
         model_name,
         request.messages.len(),
-        request.stream.unwrap_or(false)
+        request.stream.unwrap_or(false),
+        client_ip
     );
 
     // 根据请求中的 stream 参数决定使用哪种响应模式
     if request.stream.unwrap_or(false) {
-        handle_stream_response(state, request).await
+        handle_stream_response(state, request, client_ip).await
     } else {
-        handle_normal_response(state, request).await.into_response()
+        handle_normal_response(state, request, client_ip).await.into_response()
     }
 }
 
 // 处理流式响应
-async fn handle_stream_response(state: AppState, request: ChatCompletionRequest) -> Response {
+async fn handle_stream_response(state: AppState, request: ChatCompletionRequest, client_ip: String) -> Response {
     use std::error::Error as StdError;
     
     let stream: Pin<Box<dyn Stream<Item = Result<Bytes, Box<dyn StdError + Send + Sync>>> + Send>> = Box::pin(async_stream::try_stream! {
-        let model_name = format!("deepseek-ai/{}", 
-            request.model.as_deref().unwrap_or("DeepSeek-V3"));
+        let model_name = request.model.clone().unwrap_or_else(|| "DeepSeek-V3".to_string());
         let token_manager = match TokenManager::new(state.provider_pool.clone(), &model_name, "RoundRobin").await {
             Some(manager) => {
                 info!("流式请求：选择提供商成功\nURL: {}\nAPI Key: {}", 
@@ -203,14 +207,53 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest)
         info!("流式请求：开始接收数据流");
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
+        let mut latest_usage: Option<Usage> = None;  // 跟踪最新的usage信息
         
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(data) => {
                     chunk_count += 1;
+                    let text = String::from_utf8_lossy(&data);
+                    
+                    // 检查是否包含usage信息
+                    if text.contains("\"usage\"") {
+                        // 处理带有data:前缀的流式响应格式
+                        let json_text = if text.starts_with("data: ") {
+                            text.trim_start_matches("data: ")
+                                .trim_end_matches("\n\n")
+                        } else {
+                            &text
+                        };
+                        
+                        // 尝试解析JSON获取usage信息
+                        match serde_json::from_str::<serde_json::Value>(json_text) {
+                            Ok(json) => {
+                                if let Some(usage) = json.get("usage") {
+                                    if let (Some(prompt), Some(completion), Some(total)) = (
+                                        usage.get("prompt_tokens").and_then(|v| v.as_u64()),
+                                        usage.get("completion_tokens").and_then(|v| v.as_u64()),
+                                        usage.get("total_tokens").and_then(|v| v.as_u64())
+                                    ) {
+                                        latest_usage = Some(Usage {
+                                            prompt_tokens: prompt as u32,
+                                            completion_tokens: completion as u32,
+                                            total_tokens: total as u32,
+                                        });
+                                        
+                                        info!("流式请求：获取到usage信息：prompt={}, completion={}, total={}", 
+                                            prompt, completion, total);
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                info!("流式请求：解析JSON失败: {}, 原始文本: {}", e, json_text);
+                            }
+                        }
+                    }
+                    
                     info!("流式请求：接收到第 {} 个数据块\n内容: {}", 
                         chunk_count,
-                        String::from_utf8_lossy(&data)
+                        text
                     );
                     yield data;
                 },
@@ -222,7 +265,72 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest)
                 }
             }
         }
+        
         info!("流式请求：数据流接收完成，共接收 {} 个数据块", chunk_count);
+        
+        // 请求结束后，记录usage信息
+        if let Some(usage) = latest_usage {
+            // 更新token使用情况
+            token_manager.update_usage(usage.total_tokens).await;
+            
+            // 记录到数据库
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO api_usage (
+                    id, provider_api_key, request_time, model, 
+                    prompt_tokens, completion_tokens, total_tokens, 
+                    status, client_ip, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&token_manager.provider.api_key)
+            .bind(chrono::Utc::now())
+            .bind(&model_name)
+            .bind(usage.prompt_tokens)
+            .bind(usage.completion_tokens)
+            .bind(usage.total_tokens)
+            .bind("Success")
+            .bind(&client_ip)
+            .bind(None::<String>) // request_id
+            .execute(&state.db)
+            .await
+            .map_err(|e| {
+                error!("记录流式API使用情况失败: {}", e);
+            });
+            
+            info!("流式请求：已记录usage信息：prompt={}, completion={}, total={}", 
+                usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
+        } else {
+            // 没有usage信息，记录部分成功的请求
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO api_usage (
+                    id, provider_api_key, request_time, model, 
+                    prompt_tokens, completion_tokens, total_tokens, 
+                    status, client_ip, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&token_manager.provider.api_key)
+            .bind(chrono::Utc::now())
+            .bind(&model_name)
+            .bind(0) // 没有usage信息时默认为0
+            .bind(0)
+            .bind(0)
+            .bind(if chunk_count > 0 { "PartialSuccess" } else { "Error" })
+            .bind(&client_ip)
+            .bind(None::<String>)
+            .execute(&state.db)
+            .await
+            .map_err(|e| {
+                error!("记录流式API使用失败情况失败: {}", e);
+            });
+            
+            info!("流式请求：未获取到usage信息，记录为{}状态", 
+                if chunk_count > 0 { "PartialSuccess" } else { "Error" });
+        }
     });
 
     Response::builder()
@@ -237,10 +345,10 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest)
 async fn handle_normal_response(
     state: AppState,
     request: ChatCompletionRequest,
+    client_ip: String,
 ) -> Response {
-    // 获取模型名称并添加前缀
-    let model_name = format!("deepseek-ai/{}", 
-        request.model.as_deref().unwrap_or("DeepSeek-V3"));
+    // 获取模型名称，直接使用前端传入的值
+    let model_name = request.model.clone().unwrap_or_else(|| "DeepSeek-V3".to_string());
     
     // 构建 deepseek 请求
     let deepseek_request = DeepSeekRequest {
@@ -280,13 +388,39 @@ async fn handle_normal_response(
                 // 更新使用情况
                 token_manager.update_usage(total_tokens).await;
                 
-                // 直接转发原始响应
+                // 记录API使用情况
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO api_usage (
+                        id, provider_api_key, request_time, model, 
+                        prompt_tokens, completion_tokens, total_tokens, 
+                        status, client_ip, request_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "#
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&token_manager.provider.api_key)
+                .bind(chrono::Utc::now())
+                .bind(&response.model)
+                .bind(response.usage.prompt_tokens)
+                .bind(response.usage.completion_tokens)
+                .bind(total_tokens)
+                .bind("Success")
+                .bind(&client_ip)
+                .bind(None::<String>) // request_id
+                .execute(&state.db)
+                .await
+                .map_err(|e| {
+                    error!("记录API使用情况失败: {}", e);
+                });
+                
                 info!(
                     "请求完成, 提供商: {}, 总tokens: {}", 
                     token_manager.provider.base_url,
                     total_tokens
                 );
 
+                // 直接转发原始响应，保持与 OpenAI 格式一致
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
@@ -298,6 +432,33 @@ async fn handle_normal_response(
                     "使用token {} 调用API失败: {}, 策略: {}", 
                     token_manager.provider.api_key, err, strategy
                 );
+                
+                // 记录失败的请求
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO api_usage (
+                        id, provider_api_key, request_time, model, 
+                        prompt_tokens, completion_tokens, total_tokens, 
+                        status, client_ip, request_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "#
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&token_manager.provider.api_key)
+                .bind(chrono::Utc::now())
+                .bind(&model_name)
+                .bind(0)
+                .bind(0)
+                .bind(0)
+                .bind("Error")
+                .bind(&client_ip)
+                .bind(None::<String>) // request_id
+                .execute(&state.db)
+                .await
+                .map_err(|e| {
+                    error!("记录API失败使用情况失败: {}", e);
+                });
+                
                 last_error = Some(err);
                 // 继续尝试下一个策略
             }
@@ -326,7 +487,7 @@ async fn call_deepseek_api(request: DeepSeekRequest, provider: &ProviderInfo) ->
     );
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(provider.max_connections as usize)
         .pool_idle_timeout(Duration::from_millis(provider.idle_timeout_ms as u64))
         .build()
