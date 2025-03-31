@@ -1,9 +1,10 @@
 use axum::{
     routing::{post, get, put},
-    Router,
+    Router, http::HeaderValue,
 };
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use crate::handlers::api::{
     chat_completion::{handle_chat_completion, ChatCompletionRequest, ChatCompletionResponse, ErrorResponse, Message},
@@ -14,6 +15,8 @@ use crate::services::{ProviderPoolState, provider_pool::{initialize_provider_poo
 use crate::models::model_pricing::{ModelPricing, ModelPricingSummary};
 use utoipa::{OpenApi, IntoParams};
 use utoipa_swagger_ui::SwaggerUi;
+use tower_http::cors::{CorsLayer, Any};
+use axum::http::{Method};
 
 /// API文档
 #[derive(OpenApi)]
@@ -76,6 +79,38 @@ pub async fn app_routes(pool: SqlitePool) -> Router {
         provider_pool,
     };
 
+    // 配置CORS - 简单配置
+    let cors = CorsLayer::new()
+        // 允许所有来源
+        .allow_origin(Any)
+        // 允许任何方法(GET, POST等)，包括OPTIONS
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        // 明确列出允许的请求头
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+            axum::http::header::ORIGIN,
+            axum::http::header::ACCEPT_ENCODING,
+            axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS,
+            axum::http::header::ACCESS_CONTROL_REQUEST_METHOD,
+        ])
+        // 不允许带认证信息
+        .allow_credentials(false)
+        // 公开响应头
+        .expose_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::CONTENT_LENGTH,
+        ])
+        // 缓存CORS预检请求结果1小时
+        .max_age(Duration::from_secs(3600));
+
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/v1/chat/completions", post(handle_chat_completion))
@@ -87,6 +122,7 @@ pub async fn app_routes(pool: SqlitePool) -> Router {
         .route("/v1/pricing", get(get_all_pricing))
         .route("/v1/pricing/:name/:model", get(get_pricing))
         .route("/v1/pricing/:name/:model", put(update_pricing))
+        .layer(cors)
         .with_state(state)
 }
 
