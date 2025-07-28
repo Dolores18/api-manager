@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>批量上传DeepSeek供应商</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background-color: #f5f5f5;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 10px;
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            white-space: pre-wrap;
+            background-color: #f9f9f9;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            display: none;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>批量上传DeepSeek供应商</h1>
+        <p>请在下方文本框中粘贴API密钥，每行一个（例如：sk-lfmmsosqvhptsftsjgaflpvzhhgtrusbxrvmyaodochqoqsx）</p>
+        
+        <textarea id="apiKeys" placeholder="在此粘贴API密钥，每行一个"></textarea>
+        
+        <button id="submitBtn">提交到服务器</button>
+        <button id="refreshBtn">刷新</button>
+        
+        <div id="result"></div>
+        <div id="status" class="status"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const apiKeysTextarea = document.getElementById('apiKeys');
+            const submitBtn = document.getElementById('submitBtn');
+            const resultDiv = document.getElementById('result');
+            const statusDiv = document.getElementById('status');
+            const refreshBtn = document.getElementById('refreshBtn');
+            
+            submitBtn.addEventListener('click', function() {
+                const apiKeysText = apiKeysTextarea.value.trim();
+                if (!apiKeysText) {
+                    showStatus('请输入至少一个API密钥', 'error');
+                    return;
+                }
+                
+                // 分割每行并过滤掉空行
+                const apiKeys = apiKeysText.split('\n')
+                    .map(key => key.trim())
+                    .filter(key => key && key.startsWith('sk-'));
+                
+                if (apiKeys.length === 0) {
+                    showStatus('未找到有效的API密钥，格式应为：sk-xxxxxxxxxx', 'error');
+                    return;
+                }
+                
+                // 为每个API密钥创建供应商对象
+                const providers = apiKeys.map(apiKey => ({
+                    api_key: apiKey,
+                    name: "SiliconFlow",
+                    provider_type: "DeepSeek",
+                    model_name: "deepseek-ai/DeepSeek-V3"
+                }));
+                
+                // 创建请求数据
+                const processedData = {
+                    providers: providers
+                };
+                
+                submitBtn.disabled = true;
+                showStatus(`正在提交 ${providers.length} 个API密钥...`, '');
+                
+                fetch('http://localhost:3000/v1/providers/batch', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'accept': 'application/json'
+                    },
+                    body: JSON.stringify(processedData)
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP错误! 状态码: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // 处理响应数据，只显示成功和失败的API密钥
+                    let resultMessage = '';
+                    
+                    if (data.success && data.success.length > 0) {
+                        resultMessage += '成功：\n';
+                        data.success.forEach(item => {
+                            resultMessage += `${item.api_key}\n`;
+                        });
+                    } else {
+                        resultMessage += '成功：无\n';
+                    }
+                    
+                    resultMessage += '\n';
+                    
+                    if (data.failed && data.failed.length > 0) {
+                        resultMessage += '失败：\n';
+                        data.failed.forEach(item => {
+                            resultMessage += `${item.api_key}\n`;
+                        });
+                    } else {
+                        resultMessage += '失败：无\n';
+                    }
+                    
+                    resultDiv.textContent = resultMessage;
+                    resultDiv.style.display = 'block';
+                    showStatus('提交成功', 'success');
+                    submitBtn.disabled = false;
+                })
+                .catch(error => {
+                    showStatus('提交失败: ' + error.message, 'error');
+                    submitBtn.disabled = false;
+                });
+            });
+            
+            refreshBtn.addEventListener('click', function() {
+                apiKeysTextarea.value = ''; // 清空文本框
+                resultDiv.textContent = ''; // 清空结果区域
+                statusDiv.textContent = ''; // 清空状态信息
+                submitBtn.disabled = false; // 重新启用提交按钮
+            });
+            
+            function showStatus(message, type) {
+                statusDiv.textContent = message;
+                statusDiv.className = 'status';
+                if (type) {
+                    statusDiv.classList.add(type);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

@@ -204,25 +204,32 @@ pub async fn add_provider(
         }
     }
 
-    // 保存到数据库
+    // 保存到数据库 - 使用 INSERT OR REPLACE 来处理重复的 API key
     let now = Utc::now();
     match sqlx::query(
         r#"
-        INSERT INTO api_providers (
+        INSERT OR REPLACE INTO api_providers (
             id, name, provider_type, is_official, base_url, api_key,
-            status, balance, last_balance_check, min_balance_threshold,
+            status, rate_limit, balance, last_balance_check, min_balance_threshold,
             support_balance_check, model_name, model_type, model_version,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+            COALESCE((SELECT id FROM api_providers WHERE api_key = ?), ?),
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            COALESCE((SELECT created_at FROM api_providers WHERE api_key = ?), ?),
+            ?
+        )
         "#,
     )
-    .bind(&id)
+    .bind(&request.api_key)  // 用于查找现有记录的 api_key
+    .bind(&id)               // 新的 id（如果是新记录）
     .bind(&request.get_name())
     .bind(&request.provider_type)
     .bind(request.is_official)
     .bind(&request.get_base_url())
     .bind(&request.api_key)
     .bind("Active")
+    .bind(request.rate_limit)  // 使用请求中的 rate_limit（已有默认值10）
     .bind(provider_info.balance)
     .bind(now)
     .bind(request.min_balance_threshold)
@@ -230,8 +237,9 @@ pub async fn add_provider(
     .bind(&request.model_name)
     .bind(&request.model_type)
     .bind(&request.model_version)
-    .bind(now)
-    .bind(now)
+    .bind(&request.api_key)  // 用于查找现有记录的 created_at
+    .bind(now)               // 新的 created_at（如果是新记录）
+    .bind(now)               // updated_at 总是更新为当前时间
     .execute(&state.db)
     .await
     {
@@ -355,25 +363,32 @@ pub async fn batch_add_providers(
             }
         }
 
-        // 保存到数据库
+        // 保存到数据库 - 使用 INSERT OR REPLACE 来处理重复的 API key
         let now = Utc::now();
         let result = sqlx::query(
             r#"
-            INSERT INTO api_providers (
+            INSERT OR REPLACE INTO api_providers (
                 id, name, provider_type, is_official, base_url, api_key,
-                status, balance, last_balance_check, min_balance_threshold,
+                status, rate_limit, balance, last_balance_check, min_balance_threshold,
                 support_balance_check, model_name, model_type, model_version,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                COALESCE((SELECT id FROM api_providers WHERE api_key = ?), ?),
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                COALESCE((SELECT created_at FROM api_providers WHERE api_key = ?), ?),
+                ?
+            )
             "#,
         )
-        .bind(&id)
+        .bind(&provider_request.api_key)  // 用于查找现有记录的 api_key
+        .bind(&id)                        // 新的 id（如果是新记录）
         .bind(&provider_request.get_name())
         .bind(&provider_request.provider_type)
         .bind(provider_request.is_official)
         .bind(&provider_request.get_base_url())
         .bind(&provider_request.api_key)
         .bind("Active")
+        .bind(provider_request.rate_limit)  // 使用请求中的 rate_limit（已有默认值10）
         .bind(provider_info.balance)
         .bind(now)
         .bind(provider_request.min_balance_threshold)
@@ -381,8 +396,9 @@ pub async fn batch_add_providers(
         .bind(&provider_request.model_name)
         .bind(&provider_request.model_type)
         .bind(&provider_request.model_version)
-        .bind(now)
-        .bind(now)
+        .bind(&provider_request.api_key)  // 用于查找现有记录的 created_at
+        .bind(now)                        // 新的 created_at（如果是新记录）
+        .bind(now)                        // updated_at 总是更新为当前时间
         .execute(&state.db)
         .await;
 

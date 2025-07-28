@@ -63,6 +63,23 @@ impl BalanceChecker {
         Ok(())
     }
 
+    async fn remove_invalid_provider(&self, api_key: &str) -> anyhow::Result<()> {
+        let rows_affected = sqlx::query("DELETE FROM api_providers WHERE api_key = ?")
+            .bind(api_key)
+            .execute(&*self.db_pool)
+            .await?
+            .rows_affected();
+
+        if rows_affected > 0 {
+            info!(
+                "已从数据库删除无效的提供商: api_key={}",
+                api_key
+            );
+            self.provider_pool.lock().await.remove_provider(api_key);
+        }
+        Ok(())
+    }
+
     // 检查单个提供商的余额
     pub async fn check_balance(&self, provider: &mut ProviderInfo) -> anyhow::Result<()> {
         if !provider.support_balance_check {
@@ -88,6 +105,12 @@ impl BalanceChecker {
             .header("Authorization", format!("Bearer {}", provider.api_key))
             .send()
             .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            error!("获取余额失败: HTTP 401 Unauthorized. 密钥 {} 无效或已过期。", provider.api_key);
+            self.remove_invalid_provider(&provider.api_key).await?;
+            return Err(anyhow::anyhow!("获取余额失败: HTTP 401 Unauthorized"));
+        }
 
         if !response.status().is_success() {
             error!("获取余额失败: HTTP {}", response.status());

@@ -1,1 +1,4 @@
 /target
+api_manager.db
+migrations
+.DS_Store
