@@ -189,6 +189,17 @@ impl ProviderPoolState {
 
 // 从数据库初始化代理池
 pub async fn initialize_provider_pool(pool: &SqlitePool) -> Result<ProviderPoolState> {
+    info!("开始从数据库初始化提供商池...");
+    
+    // 先查询总数
+    let total_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM api_providers WHERE status = 'Active'"
+    )
+    .fetch_one(pool)
+    .await?;
+    
+    info!("数据库中活跃的提供商总数: {}", total_count);
+    
     let providers = sqlx::query(
         r#"
         SELECT 

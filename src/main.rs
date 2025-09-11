@@ -6,7 +6,7 @@ use api_manager::{
     routes::api::app_routes,
     services::{balance_checker::BalanceChecker, provider_pool::initialize_provider_pool},
 };
-use tracing::info;
+use tracing::{info, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::net::SocketAddr;
 
@@ -41,16 +41,22 @@ async fn main() -> anyhow::Result<()> {
     // 创建余额检查器
     let balance_checker = Arc::new(BalanceChecker::new(db_pool.clone(), provider_pool.clone()));
 
-    // 启动定期余额检查任务
-    let pool_clone = provider_pool.clone();
+    // 启动时立即执行一次余额检查（从数据库加载）
+    info!("开始启动时余额检查...");
+    if let Err(e) = balance_checker.check_all_providers_from_db().await {
+        error!("启动时余额检查失败: {}", e);
+    }
+
+    // 启动定期余额检查任务（从数据库加载）
     let checker_clone = balance_checker.clone();
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(300)); // 每5分钟检查一次
         loop {
             interval.tick().await;
             info!("开始定期余额检查...");
-            let mut pool_state = pool_clone.lock().await;
-            checker_clone.check_all_providers(pool_state.get_providers()).await;
+            if let Err(e) = checker_clone.check_all_providers_from_db().await {
+                error!("定期余额检查失败: {}", e);
+            }
         }
     });
 

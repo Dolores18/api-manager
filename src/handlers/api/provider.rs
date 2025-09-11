@@ -52,7 +52,7 @@ pub struct AddProviderRequest {
 
 // 默认值函数
 fn default_rate_limit() -> u32 { 10 }
-fn default_min_balance_threshold() -> f64 { 0.0 }
+fn default_min_balance_threshold() -> f64 { 1.0 }
 fn default_support_balance_check() -> bool { true }
 fn default_model_type() -> String { "ChatCompletion".to_string() }
 fn default_model_version() -> String { "v3".to_string() }
@@ -329,42 +329,54 @@ pub async fn batch_add_providers(
             model_version: provider_request.model_version.clone(),
         };
 
-        // 初始化 BalanceChecker，传入 db 和 provider_pool
+        // 先验证API密钥有效性
         let balance_checker = BalanceChecker::new(state.db.clone().into(), state.provider_pool.clone());
-
-        // 检查余额
-        if provider_info.support_balance_check {
-            match balance_checker.check_balance(&mut provider_info).await {
-                Ok(_) => {
-                    if provider_info.balance <= 0.0 {
+        let verified_balance = if provider_info.support_balance_check {
+            match balance_checker.verify_api_key(&provider_info).await {
+                Ok(balance) => {
+                    info!("API密钥验证成功: api_key={}, balance={}", 
+                          provider_request.api_key, balance);
+                    
+                    // 检查余额是否满足最小阈值
+                    if balance < provider_request.min_balance_threshold {
+                        error!("API密钥余额不足: api_key={}, balance={}, 最小阈值={}", 
+                               provider_request.api_key, balance, provider_request.min_balance_threshold);
                         failed.push(ProviderAddResult {
                             id: None,
                             name: provider_request.get_name(),
                             api_key: provider_request.api_key.clone(),
-                            balance: Some(provider_info.balance),
-                            error: Some("API key 余额为0，无法使用，请先充值后再添加".to_string()),
+                            balance: Some(balance),
+                            error: Some(format!("余额不足: {:.4} < {:.4}", balance, provider_request.min_balance_threshold)),
                             created_at: None,
                         });
                         continue;
                     }
+                    
+                    balance
                 }
                 Err(e) => {
-                    error!("检查余额失败: {}", e);
+                    error!("API密钥验证失败: api_key={}, 错误={}", 
+                           provider_request.api_key, e);
                     failed.push(ProviderAddResult {
                         id: None,
                         name: provider_request.get_name(),
                         api_key: provider_request.api_key.clone(),
                         balance: None,
-                        error: Some(format!("检查余额失败: {}", e)),
+                        error: Some(format!("API密钥验证失败: {}", e)),
                         created_at: None,
                     });
                     continue;
                 }
             }
-        }
+        } else {
+            provider_info.balance
+        };
 
-        // 保存到数据库 - 使用 INSERT OR REPLACE 来处理重复的 API key
+        // 验证通过后，保存到数据库
         let now = Utc::now();
+        info!("开始保存已验证的提供商到数据库: api_key={}, name={}, balance={}", 
+              provider_request.api_key, provider_request.get_name(), verified_balance);
+        
         let result = sqlx::query(
             r#"
             INSERT OR REPLACE INTO api_providers (
@@ -389,7 +401,7 @@ pub async fn batch_add_providers(
         .bind(&provider_request.api_key)
         .bind("Active")
         .bind(provider_request.rate_limit)  // 使用请求中的 rate_limit（已有默认值10）
-        .bind(provider_info.balance)
+        .bind(verified_balance)
         .bind(now)
         .bind(provider_request.min_balance_threshold)
         .bind(provider_request.support_balance_check)
@@ -403,18 +415,42 @@ pub async fn batch_add_providers(
         .await;
 
         match result {
-            Ok(_) => {
+            Ok(exec_result) => {
+                info!("提供商保存成功: api_key={}, 影响行数={}", 
+                      provider_request.api_key, exec_result.rows_affected());
+                
+                // 验证数据是否真的保存到数据库
+                let verify_count = sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM api_providers WHERE api_key = ?"
+                )
+                .bind(&provider_request.api_key)
+                .fetch_one(&state.db)
+                .await;
+                
+                match verify_count {
+                    Ok(count) => {
+                        info!("验证保存结果: api_key={}, 数据库中的记录数={}", 
+                              provider_request.api_key, count);
+                    }
+                    Err(e) => {
+                        error!("验证保存结果失败: api_key={}, 错误={}", 
+                               provider_request.api_key, e);
+                    }
+                }
+                
+                // 数据库保存成功，余额已在保存前验证过
+                
                 success.push(ProviderAddResult {
                     id: Some(id),
                     name: provider_request.get_name(),
                     api_key: provider_request.api_key,
-                    balance: Some(provider_info.balance),
+                    balance: Some(verified_balance),
                     error: None,
                     created_at: Some(now),
                 });
             }
             Err(e) => {
-                error!("保存提供商失败: {}", e);
+                error!("保存提供商失败: api_key={}, 错误={}", provider_request.api_key, e);
                 failed.push(ProviderAddResult {
                     id: None,
                     name: provider_request.get_name(),
@@ -429,12 +465,15 @@ pub async fn batch_add_providers(
 
     // 更新provider pool
     if !success.is_empty() {
+        info!("开始重新加载提供商池，成功添加了 {} 个提供商", success.len());
         if let Ok(new_pool) = initialize_provider_pool(&state.db).await {
             let mut pool = state.provider_pool.lock().await;
             *pool = new_pool;
+            info!("提供商池重新加载完成，当前有 {} 个提供商", pool.get_providers().len());
         }
     }
 
+    info!("批量添加提供商完成: 成功={}, 失败={}", success.len(), failed.len());
     let response = AddProviderResponse { success, failed };
     (StatusCode::CREATED, Json(response)).into_response()
 }

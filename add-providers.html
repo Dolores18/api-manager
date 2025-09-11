@@ -124,7 +124,7 @@
                 submitBtn.disabled = true;
                 showStatus(`正在提交 ${providers.length} 个API密钥...`, '');
                 
-                fetch('http://localhost:3000/v1/providers/batch', {
+                fetch('http://127.0.0.1:3000/v1/providers/batch', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
