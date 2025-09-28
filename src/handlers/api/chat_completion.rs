@@ -32,6 +32,9 @@ pub struct Message {
     pub role: String,
     /// 消息内容
     pub content: String,
+    /// 拒绝原因（Grok API 特有，可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 // 请求格式
@@ -49,25 +52,29 @@ pub struct ChatCompletionRequest {
     pub stream: Option<bool>,
 }
 
-// DeepSeek API请求格式
+// 通用 API 请求格式（支持 DeepSeek、Grok 等）
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-struct DeepSeekRequest {
+struct ApiRequest {
     model: String,
     messages: Vec<Message>,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     temperature: f32,
     stream: bool,
 }
 
-// DeepSeek API响应格式
+// 通用 API 响应格式（支持 DeepSeek、Grok 等）
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-struct DeepSeekResponse {
+struct ApiResponse {
     id: String,
     object: String,
     created: u64,
     model: String,
     choices: Vec<Choice>,
     usage: Usage,
+    // Grok API 特有字段（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -82,6 +89,13 @@ struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    // Grok API 扩展字段（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_tokens_details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_tokens_details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_sources_used: Option<u32>,
 }
 
 // 我们的API响应格式
@@ -158,18 +172,18 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
             }
         };
 
-        // 构建 DeepSeek 请求
-        let deepseek_request = DeepSeekRequest {
-            model: model_name.clone(),
-            messages: request.messages,
-            max_tokens: request.max_tokens.unwrap_or(1024),
-            temperature: request.temperature.unwrap_or(0.7),
-            stream: true,
-        };
+        // 构建 API 请求
+        let api_request = build_api_request(&request, &model_name, true);
+        
+        let messages_without_refusal: Vec<Message> = api_request.messages.iter().map(|m| Message {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            refusal: None, // 请求中不包含 refusal
+        }).collect();
 
         info!("流式请求：准备发送请求\nURL: {}\n请求体: {}", 
             token_manager.provider.base_url,
-            serde_json::to_string_pretty(&deepseek_request).unwrap_or_default()
+            serde_json::to_string_pretty(&api_request).unwrap_or_default()
         );
 
         let client = Client::builder()
@@ -181,7 +195,7 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
             .post(&token_manager.provider.base_url)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token_manager.provider.api_key))
-            .json(&deepseek_request)
+            .json(&api_request)
             .send()
             .await {
                 Ok(res) => {
@@ -238,6 +252,9 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
                                             prompt_tokens: prompt as u32,
                                             completion_tokens: completion as u32,
                                             total_tokens: total as u32,
+                                            prompt_tokens_details: None,
+                                            completion_tokens_details: None,
+                                            num_sources_used: None,
                                         });
                                         
                                         info!("流式请求：获取到usage信息：prompt={}, completion={}, total={}", 
@@ -350,14 +367,8 @@ async fn handle_normal_response(
     // 获取模型名称，直接使用前端传入的值
     let model_name = request.model.clone().unwrap_or_else(|| "DeepSeek-V3".to_string());
     
-    // 构建 deepseek 请求
-    let deepseek_request = DeepSeekRequest {
-        model: model_name.clone(),
-        messages: request.messages,
-        max_tokens: request.max_tokens.unwrap_or(1000),
-        temperature: request.temperature.unwrap_or(0.7),
-        stream: request.stream.unwrap_or(false),
-    };
+    // 构建 API 请求
+    let api_request = build_api_request(&request, &model_name, request.stream.unwrap_or(false));
 
     // 尝试不同的token
     let mut last_error = None;
@@ -381,8 +392,8 @@ async fn handle_normal_response(
             },
         };
 
-        // 调用deepseek API
-        match call_deepseek_api(deepseek_request.clone(), &token_manager.provider).await {
+        // 调用 API
+        match call_api(api_request.clone(), &token_manager.provider).await {
             Ok(response) => {
                 let total_tokens = response.usage.total_tokens;
                 // 更新使用情况
@@ -477,10 +488,25 @@ async fn handle_normal_response(
         .unwrap()
 }
 
-// 调用DeepSeek API
-async fn call_deepseek_api(request: DeepSeekRequest, provider: &ProviderInfo) -> Result<DeepSeekResponse, String> {
+// 构建 API 请求
+fn build_api_request(request: &ChatCompletionRequest, model_name: &str, stream: bool) -> ApiRequest {
+    ApiRequest {
+        model: model_name.to_string(),
+        messages: request.messages.iter().map(|m| Message {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            refusal: None, // 请求中不包含 refusal
+        }).collect(),
+        max_tokens: request.max_tokens.or(Some(1000)), // 总是包含 max_tokens，API 会忽略不需要的参数
+        temperature: request.temperature.unwrap_or(0.7),
+        stream,
+    }
+}
+
+// 调用通用 API
+async fn call_api(request: ApiRequest, provider: &ProviderInfo) -> Result<ApiResponse, String> {
     info!(
-        "准备调用DeepSeek API\nURL: {}\nAPI Key: {}\n请求体: {}", 
+        "准备调用 API\nURL: {}\nAPI Key: {}\n请求体: {}", 
         provider.base_url,
         provider.api_key,
         serde_json::to_string_pretty(&request).unwrap_or_default()
@@ -527,17 +553,17 @@ async fn call_deepseek_api(request: DeepSeekRequest, provider: &ProviderInfo) ->
                     info!("收到原始响应: {}", response_text);
                     
                     // 解析响应
-                    match serde_json::from_str::<DeepSeekResponse>(&response_text) {
-                        Ok(deepseek_response) => {
+                    match serde_json::from_str::<ApiResponse>(&response_text) {
+                        Ok(api_response) => {
                             info!(
                                 "请求成功\n模型: {}\n总tokens: {}\nprompt_tokens: {}\ncompletion_tokens: {}\n响应内容: {}", 
-                                deepseek_response.model,
-                                deepseek_response.usage.total_tokens,
-                                deepseek_response.usage.prompt_tokens,
-                                deepseek_response.usage.completion_tokens,
-                                serde_json::to_string_pretty(&deepseek_response.choices).unwrap_or_default()
+                                api_response.model,
+                                api_response.usage.total_tokens,
+                                api_response.usage.prompt_tokens,
+                                api_response.usage.completion_tokens,
+                                serde_json::to_string_pretty(&api_response.choices).unwrap_or_default()
                             );
-                            return Ok(deepseek_response)
+                            return Ok(api_response)
                         },
                         Err(e) => {
                             error!("解析响应失败: {}\n原始响应: {}", e, response_text);
