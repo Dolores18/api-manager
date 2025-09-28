@@ -14,6 +14,8 @@ jobs:
     env:
       # 设置 Rust 编译器不将警告当作错误
       RUSTFLAGS: "-A warnings"
+      # 禁用 SQLx 编译时数据库检查
+      SQLX_OFFLINE: true
     steps:
       - name: 🚀 Start build
         run: echo "🚀 Build process started"
