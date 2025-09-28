@@ -5,7 +5,7 @@ use axum::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{time::Duration, sync::Arc, net::SocketAddr};
+use std::{time::Duration, net::SocketAddr};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 use sqlx::SqlitePool;
@@ -175,11 +175,7 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
         // 构建 API 请求
         let api_request = build_api_request(&request, &model_name, true);
         
-        let messages_without_refusal: Vec<Message> = api_request.messages.iter().map(|m| Message {
-            role: m.role.clone(),
-            content: m.content.clone(),
-            refusal: None, // 请求中不包含 refusal
-        }).collect();
+        // 消息已经在 api_request 中处理，无需额外转换
 
         info!("流式请求：准备发送请求\nURL: {}\n请求体: {}", 
             token_manager.provider.base_url,

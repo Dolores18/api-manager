@@ -4,14 +4,14 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{SqlitePool, Row};
-use std::collections::HashMap;
+use sqlx::SqlitePool;
+// use std::collections::HashMap; // 未使用，已注释
 use tracing::{error, info};
 use crate::routes::api::AppState;
-use crate::models::api_provider::{ApiProvider, ProviderType, ProviderStatus};
+use crate::models::api_provider::ProviderType;
 use crate::services::balance_checker::BalanceChecker;
 use crate::services::{ProviderInfo, provider_pool::initialize_provider_pool};
-use std::sync::Arc;
+// use std::sync::Arc; // 未使用，已注释
 use chrono::Utc;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -133,7 +133,7 @@ fn generate_uuid() -> String {
 )]
 pub async fn add_provider(
     State(state): State<AppState>,
-    Json(mut request): Json<AddProviderRequest>,
+    Json(request): Json<AddProviderRequest>,
 ) -> Response {
     info!("收到添加API提供商请求: {:?}", request);
 
@@ -144,7 +144,7 @@ pub async fn add_provider(
     let id = generate_uuid();
 
     // 解析提供商类型
-    let provider_type = match request.provider_type.as_str() {
+    let _provider_type = match request.provider_type.as_str() {
         "OpenAI" => ProviderType::OpenAI,
         "Anthropic" => ProviderType::Anthropic,
         "DeepSeek" => ProviderType::DeepSeek,
@@ -302,7 +302,7 @@ pub async fn batch_add_providers(
         let id = generate_uuid();
 
         // 解析提供商类型
-        let provider_type = match provider_request.provider_type.as_str() {
+        let _provider_type = match provider_request.provider_type.as_str() {
             "OpenAI" => ProviderType::OpenAI,
             "Anthropic" => ProviderType::Anthropic,
             "DeepSeek" => ProviderType::DeepSeek,
@@ -311,7 +311,7 @@ pub async fn batch_add_providers(
         };
 
         // 创建临时的 ProviderInfo 用于检查余额
-        let mut provider_info = ProviderInfo {
+        let provider_info = ProviderInfo {
             base_url: provider_request.get_base_url(),
             api_key: provider_request.api_key.clone(),
             max_connections: 10,

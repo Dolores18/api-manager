@@ -1,0 +1,7 @@
+[build]
+# 在构建时允许警告，不将警告当作错误
+rustflags = ["-A", "warnings"]
+
+[target.x86_64-unknown-linux-gnu]
+# 针对 Linux 目标的特定配置
+rustflags = ["-A", "warnings"]

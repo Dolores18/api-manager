@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+// use std::collections::HashMap; // 未使用，已注释
 
 /// API提供商枚举
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -71,7 +71,7 @@ impl ApiProvider {
         let now = chrono::Utc::now();
         
         // 如果没有提供provider_name，则根据provider_type生成
-        let provider_name = provider_name.unwrap_or_else(|| {
+        let _provider_name = provider_name.unwrap_or_else(|| {
             match provider_type {
                 ProviderType::OpenAI => "OpenAI".to_string(),
                 ProviderType::Anthropic => "Anthropic".to_string(),

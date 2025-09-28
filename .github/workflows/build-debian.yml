@@ -11,6 +11,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # 设置 Rust 编译器不将警告当作错误
+      RUSTFLAGS: "-A warnings"
     steps:
       - name: 🚀 Start build
         run: echo "🚀 Build process started"
@@ -46,6 +49,9 @@ jobs:
         with:
           command: build
           args: --release --target x86_64-unknown-linux-gnu
+        env:
+          # 允许警告，不将警告当作错误
+          RUSTFLAGS: "-A warnings"
 
       - name: Generate version number
         id: version

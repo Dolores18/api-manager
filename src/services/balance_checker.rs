@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{error, info};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use sqlx::{SqlitePool, Row};
 use tokio::sync::Mutex;
 use crate::services::provider_pool::{ProviderInfo, ProviderPoolState};
