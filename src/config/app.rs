@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub connection_pool: ConnectionPoolConfig,
     /// 健康检查配置
     pub health_check: HealthCheckConfig,
+    /// 代理配置
+    pub proxy: ProxyConfig,
     /// API提供商配置
     pub api_providers: HashMap<String, ApiProviderConfig>,
 }
@@ -113,6 +115,15 @@ pub struct HealthCheckConfig {
     pub timeout: u64,
 }
 
+/// 代理配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    /// 是否启用代理
+    pub enable: bool,
+    /// 代理URL (支持 http://、https://、socks5://)
+    pub url: String,
+}
+
 /// API提供商配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiProviderConfig {
@@ -197,6 +208,14 @@ impl AppConfig {
             .parse::<u64>()
             .unwrap_or(5000);
 
+        // 代理配置
+        let enable_proxy = env::var("ENABLE_PROXY")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        let proxy_url = env::var("PROXY_URL")
+            .unwrap_or_else(|_| "socks5://127.0.0.1:1080".to_string());
+
         // API提供商配置
         let mut api_providers = HashMap::new();
         
@@ -264,6 +283,10 @@ impl AppConfig {
             health_check: HealthCheckConfig {
                 interval: health_check_interval,
                 timeout: health_check_timeout,
+            },
+            proxy: ProxyConfig {
+                enable: enable_proxy,
+                url: proxy_url,
             },
             api_providers,
         })

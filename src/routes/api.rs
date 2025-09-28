@@ -62,10 +62,11 @@ struct ApiDoc;
 pub struct AppState {
     pub db: SqlitePool,
     pub provider_pool: Arc<Mutex<ProviderPoolState>>,
+    pub config: crate::config::AppConfig,
 }
 
 // 配置API路由
-pub async fn app_routes(pool: SqlitePool) -> Router {
+pub async fn app_routes(pool: SqlitePool, config: crate::config::AppConfig) -> Router {
     // 初始化provider pool
     let provider_pool = Arc::new(Mutex::new(
         initialize_provider_pool(&pool)
@@ -77,6 +78,7 @@ pub async fn app_routes(pool: SqlitePool) -> Router {
     let state = AppState {
         db: pool,
         provider_pool,
+        config,
     };
 
     // 配置CORS - 简单配置

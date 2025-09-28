@@ -182,11 +182,22 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
             serde_json::to_string_pretty(&api_request).unwrap_or_default()
         );
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))  // 流式请求需要更长的超时时间
-            .build()
-            .map_err(|e| Box::new(e) as Box<dyn StdError + Send + Sync>)?;
+        info!("流式请求：准备创建HTTP客户端");
+        info!("代理配置：启用={}, URL={}", state.config.proxy.enable, state.config.proxy.url);
+        
+        let client = create_http_client(
+            state.config.proxy.enable, 
+            &state.config.proxy.url, 
+            300  // 流式请求需要更长的超时时间
+        ).map_err(|e| {
+            error!("流式请求：创建HTTP客户端失败: {}", e);
+            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)) as Box<dyn StdError + Send + Sync>
+        })?;
+        
+        info!("流式请求：HTTP客户端创建成功");
 
+        info!("流式请求：开始发送HTTP请求到 {}", token_manager.provider.base_url);
+        
         let response = match client
             .post(&token_manager.provider.base_url)
             .header("Content-Type", "application/json")
@@ -195,6 +206,7 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
             .send()
             .await {
                 Ok(res) => {
+                    info!("流式请求：收到HTTP响应，状态码: {}", res.status());
                     if !res.status().is_success() {
                         error!("流式请求：API调用失败\n状态码: {}\nURL: {}", 
                             res.status(), token_manager.provider.base_url
@@ -202,13 +214,21 @@ async fn handle_stream_response(state: AppState, request: ChatCompletionRequest,
                         yield Bytes::from(format!("data: {{\"error\":\"API调用失败，状态码: {}\"}}\n\n", res.status()));
                         return;
                     }
-                    info!("流式请求：连接建立成功\n状态码: {}", res.status());
+                    info!("流式请求：连接建立成功，开始接收流式数据");
                     res
                 },
                 Err(e) => {
-                    error!("流式请求：发送请求失败\n错误: {}\nURL: {}", 
-                        e, token_manager.provider.base_url
-                    );
+                    error!("流式请求：发送HTTP请求失败");
+                    error!("错误详情: {}", e);
+                    error!("目标URL: {}", token_manager.provider.base_url);
+                    error!("代理配置: 启用={}, URL={}", state.config.proxy.enable, state.config.proxy.url);
+                    
+                    // 检查是否是代理相关错误
+                    let error_msg = e.to_string();
+                    if error_msg.contains("proxy") || error_msg.contains("socks") {
+                        error!("❌ 这可能是代理连接问题！");
+                    }
+                    
                     yield Bytes::from(format!("data: {{\"error\":\"请求失败: {}\"}}\n\n", e));
                     return;
                 }
@@ -389,7 +409,12 @@ async fn handle_normal_response(
         };
 
         // 调用 API
-        match call_api(api_request.clone(), &token_manager.provider).await {
+        match call_api(
+            api_request.clone(), 
+            &token_manager.provider, 
+            state.config.proxy.enable, 
+            &state.config.proxy.url
+        ).await {
             Ok(response) => {
                 let total_tokens = response.usage.total_tokens;
                 // 更新使用情况
@@ -484,6 +509,52 @@ async fn handle_normal_response(
         .unwrap()
 }
 
+// 创建 HTTP 客户端（支持代理）
+pub fn create_http_client(enable_proxy: bool, proxy_url: &str, timeout_secs: u64) -> Result<Client, String> {
+    info!("创建HTTP客户端：enable_proxy={}, proxy_url={}, timeout={}s", enable_proxy, proxy_url, timeout_secs);
+    
+    let mut client_builder = Client::builder()
+        .timeout(Duration::from_secs(timeout_secs));
+
+    // 如果启用代理，添加代理配置
+    if enable_proxy {
+        info!("正在配置代理: {}", proxy_url);
+        
+        // 检查是否是 SOCKS 代理，如果是，确保使用远程 DNS 解析
+        let proxy_url_fixed = if proxy_url.starts_with("socks5://") {
+            let fixed_url = proxy_url.replace("socks5://", "socks5h://");
+            info!("将 SOCKS 代理URL修改为远程DNS解析: {} -> {}", proxy_url, fixed_url);
+            fixed_url
+        } else {
+            proxy_url.to_string()
+        };
+        
+        match reqwest::Proxy::all(&proxy_url_fixed) {
+            Ok(proxy) => {
+                client_builder = client_builder.proxy(proxy);
+                info!("✅ 代理配置成功: {}", proxy_url_fixed);
+            }
+            Err(e) => {
+                error!("❌ 代理配置失败: {} - 错误: {}", proxy_url_fixed, e);
+                return Err(format!("无效的代理URL: {} - {}", proxy_url_fixed, e));
+            }
+        }
+    } else {
+        info!("未启用代理，使用直连");
+    }
+
+    match client_builder.build() {
+        Ok(client) => {
+            info!("✅ HTTP客户端创建成功");
+            Ok(client)
+        }
+        Err(e) => {
+            error!("❌ HTTP客户端创建失败: {}", e);
+            Err(format!("创建HTTP客户端失败: {}", e))
+        }
+    }
+}
+
 // 构建 API 请求
 fn build_api_request(request: &ChatCompletionRequest, model_name: &str, stream: bool) -> ApiRequest {
     ApiRequest {
@@ -500,7 +571,7 @@ fn build_api_request(request: &ChatCompletionRequest, model_name: &str, stream: 
 }
 
 // 调用通用 API
-async fn call_api(request: ApiRequest, provider: &ProviderInfo) -> Result<ApiResponse, String> {
+async fn call_api(request: ApiRequest, provider: &ProviderInfo, enable_proxy: bool, proxy_url: &str) -> Result<ApiResponse, String> {
     info!(
         "准备调用 API\nURL: {}\nAPI Key: {}\n请求体: {}", 
         provider.base_url,
@@ -508,10 +579,22 @@ async fn call_api(request: ApiRequest, provider: &ProviderInfo) -> Result<ApiRes
         serde_json::to_string_pretty(&request).unwrap_or_default()
     );
 
-    let client = Client::builder()
+    let mut client_builder = Client::builder()
         .timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(provider.max_connections as usize)
-        .pool_idle_timeout(Duration::from_millis(provider.idle_timeout_ms as u64))
+        .pool_idle_timeout(Duration::from_millis(provider.idle_timeout_ms as u64));
+
+    // 如果启用代理，添加代理配置
+    if enable_proxy {
+        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+            client_builder = client_builder.proxy(proxy);
+            info!("已启用代理: {}", proxy_url);
+        } else {
+            return Err(format!("无效的代理URL: {}", proxy_url));
+        }
+    }
+
+    let client = client_builder
         .build()
         .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
 

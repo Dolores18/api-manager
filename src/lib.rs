@@ -7,3 +7,6 @@ pub mod services;
 pub mod errors;
 pub mod utils;
 pub mod middlewares;
+
+#[cfg(test)]
+pub mod tests;

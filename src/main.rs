@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     info!("API代理池初始化成功");
 
     // 创建路由
-    let app = app_routes((*db_pool).clone()).await;
+    let app = app_routes((*db_pool).clone(), config.clone()).await;
 
     // 启动服务器
     let addr = config.socket_addr();
